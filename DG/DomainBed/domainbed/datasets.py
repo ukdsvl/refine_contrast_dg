@@ -64,13 +64,13 @@ class Debug(MultipleDomainDataset):
         self.input_shape = self.INPUT_SHAPE
         self.num_classes = 2
         self.datasets = []
-        for _ in [0, 1, 2]:
+        for _ in [0, 1, 2]: #domains list
             self.datasets.append(
                 TensorDataset(
                     torch.randn(16, *self.INPUT_SHAPE),
                     torch.randint(0, self.num_classes, (16,))
                 )
-            )
+            ) # append one dataset for the considered domain. say, 16 images, along with their labels
 
 class Debug28(Debug):
     INPUT_SHAPE = (3, 28, 28)
@@ -180,7 +180,7 @@ class MultipleEnvironmentImageFolder(MultipleDomainDataset):
     def __init__(self, root, test_envs, augment, hparams):
         super().__init__()
         environments = [f.name for f in os.scandir(root) if f.is_dir()]
-        environments = sorted(environments)
+        environments = sorted(environments) # list of all domains in the dataset, in sorted order
 
         transform = transforms.Compose([
             transforms.Resize((224,224)),
@@ -211,8 +211,33 @@ class MultipleEnvironmentImageFolder(MultipleDomainDataset):
             path = os.path.join(root, environment)
             env_dataset = ImageFolder(path,
                 transform=env_transform)
-
+            ################################ Code required for RCERM ################################ 
+            # env_dataset: <class 'torchvision.datasets.folder.ImageFolder'>, 
+            # Dataset ImageFolder
+            #     Number of datapoints: 2050
+            #     Root location: ../../DG/DomainBed/domainbed/data/PACS/art_painting
+            # Dataset ImageFolder
+            #     Number of datapoints: 2345
+            #     Root location: ../../DG/DomainBed/domainbed/data/PACS/cartoon
+            # Dataset ImageFolder
+            #     Number of datapoints: 1671
+            #     Root location: ../../DG/DomainBed/domainbed/data/PACS/photo
+            # Dataset ImageFolder
+            #     Number of datapoints: 3934
+            #     Root location: ../../DG/DomainBed/domainbed/data/PACS/sketch
+            # access it via:
+            ################################ Code required for RCERM ################################ 
             self.datasets.append(env_dataset)
+            ################################ Code required for RCERM ################################ 
+#             # env_dataset containst first all elts of class 0, then class 1, ...class C-1
+#             for (batch_idx, sample_batched) in enumerate(self.datasets[i]):
+#             ###     if batch_idx==1:
+#             ###         break
+#                 print('im ',batch_idx,' :',sample_batched)
+#                 ## eg, im  0  : (<PIL.Image.Image image mode=RGB size=227x227 at 0x7FB44448C430>, 0)
+            ################################ Code required for RCERM ################################ 
+
+            
 
         self.input_shape = (3, 224, 224,)
         self.num_classes = len(self.datasets[-1].classes)
