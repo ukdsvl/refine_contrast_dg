@@ -51,9 +51,9 @@ def loss_function(q, k, queue):
 
     pos = torch.exp(torch.div(torch.bmm(q.view(N,1,C), k.view(N,C,1)).view(N, 1),tau))
     neg = torch.sum(torch.exp(torch.div(torch.mm(q.view(N,C), torch.t(queue)),tau)), dim=1)
-    denominator = neg + pos
+    denominator = neg + pos # if we omit +pos, loss would reduce to -ve values.
 
-    return torch.mean(-torch.log(torch.div(pos,denominator)))
+    return torch.mean(-torch.log(torch.div(pos,denominator))) # this loss is essentially a reformulation of infoNCE loss
 
 class AttenHead(nn.Module):
     def __init__(self, fdim, num_heads=1):
