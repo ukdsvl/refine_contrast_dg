@@ -25,6 +25,7 @@ momentum = queue_var.momentum # theta in momentum encoding step
 ALGORITHMS = [
     'ERM',
     'RCERM',
+    'RCERMNG',
     'Fish',
     'IRM',
     'GroupDRO',
@@ -183,7 +184,7 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
         fxg,wx=self.refine_augment(fx,fp_refined)
         return fxg
 
-    def get_augmented_batch(self, fx_batch,fp):
+    def get_augmented_batch_looped(self, fx_batch,fp):
         fx_batch_aug=None
         for col in range(fx_batch.size(0)):
             fx_=fx_batch[col]
@@ -192,6 +193,167 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
                 fx_batch_aug=self.get_augmented_feature(fx_,fp)
             else:
                 fx_batch_aug=torch.cat((fx_batch_aug, self.get_augmented_feature(fx_,fp)), 0)
+        return fx_batch_aug
+
+
+    def get_augmented_batch(self,fx_batch,fp):
+        batch_list=list(fx_batch)
+        batch_list_updated = list(map(lambda im_fx:
+                                      self.get_augmented_feature(torch.reshape(im_fx, (1, im_fx.size(0))),fp), batch_list))
+
+        fx_batch_aug = torch.stack([sub_list for sub_list in batch_list_updated], dim=0)
+        fx_batch_aug = torch.squeeze(fx_batch_aug, 1)
+        return fx_batch_aug
+
+
+    def update(self, minibatches, unlabeled=None):
+        train_queues = queue_var.train_queues
+        nclass=len(train_queues)
+        ndomains=len(train_queues[0])
+        loss_rc=0 # for accumulating the additive contrastive loss
+        
+        all_x=None
+        all_y=None
+        
+        for id_c in range(nclass): # loop over classes
+            for id_d in range(ndomains): # loop over domains
+                mb_ids=(minibatches[id_d][1] == id_c).nonzero(as_tuple=True)[0]
+                # indices of those egs from domain id_d, whose class label is id_c
+                label_tensor=minibatches[id_d][1][mb_ids] # labels
+                if mb_ids.size(0)==0:
+                    #print('class has no element')
+                    continue
+                data_tensor=minibatches[id_d][0][mb_ids] # data
+                # extract query features: torch.Size([negs, dim])         
+                q = self.featurizer(data_tensor) 
+
+                if all_x is None:
+                    all_x = q
+                    all_y = label_tensor
+                else:
+                    all_x = torch.cat((all_x, q), 0)
+                    all_y = torch.cat((all_y, label_tensor), 0)
+                
+                positive_queue,negative_queue=queue_var.get_pos_neg_queues(id_c,id_d,train_queues)
+                #### Gated Fusion + Attention based refinement and augmentations
+                k=self.get_augmented_batch(q,positive_queue)
+                
+                # detach the key as we won't be backpropagating by the key encoder
+                k = k.detach()
+
+                #l2 normalize
+                q = torch.div(q,torch.norm(q,dim=1).reshape(-1,1))
+                k = torch.div(k,torch.norm(k,dim=1).reshape(-1,1))
+
+                # get loss value
+                # q: embedding of the anchor
+                # k: embedding of the positive (augmented anchor)
+                # negative_queue: embeddings in the memory queue
+                loss_rc += queue_var.loss_function(q, k, negative_queue)
+                
+                data_emb = self.key_encoder(data_tensor) # extract features: torch.Size([negs, dim])
+                data_emb = data_emb.detach()
+                data_emb = torch.div(data_emb,torch.norm(data_emb,dim=1).reshape(-1,1))#l2 normalize
+                
+                # update queue for this class and this domain
+                current_queue = train_queues[id_c][id_d]
+                current_queue = torch.cat((current_queue, data_emb), 0)
+                current_queue = current_queue[-queue_sz:] # keep only the last queue_sz entries
+                train_queues[id_c][id_d] = current_queue
+        
+
+        all_pred=self.classifier(all_x)
+        loss_ce=F.cross_entropy(all_pred, all_y)
+        loss = loss_ce+loss_rc
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        # update key_encoder
+        for theta_k, theta_q in zip(self.key_encoder.parameters(), self.featurizer.parameters()):
+            theta_k.data.copy_(momentum*theta_k.data + theta_q.data*(1.0 - momentum))
+
+        queue_var.train_queues = train_queues # update the global variable
+            
+        return {'loss': loss.item(),'loss_ce': loss_ce.item(),'loss_rc': loss_rc.item()}
+
+    def predict(self, x):
+        return self.classifier(self.featurizer(x))
+
+################################ Code required for RCERM ################################ 
+    
+    
+
+################################ Code required for RCERM_NG ################################ 
+
+class RCERMNG(Algorithm): # Refined_Contrastive_ERM_No_Gated_Fusion
+    """
+    Refined Contrastive Empirical Risk Minimization with No Gated Fusion(RCERMNG)
+    """
+
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super(RCERMNG, self).__init__(input_shape, num_classes, num_domains,
+                                  hparams)
+        self.featurizer = networks.Featurizer(input_shape, self.hparams)
+        self.classifier = networks.Classifier(
+            self.featurizer.n_outputs,
+            num_classes,
+            self.hparams['nonlinear_classifier'])
+
+        
+        self.key_encoder = copy.deepcopy(self.featurizer) # not going to be backpropagated
+
+        fdim=self.classifier.in_features
+        self.atten = queue_var.AttenHead(fdim, num_heads=1)#.to(device)
+        
+        
+        self.optimizer = torch.optim.Adam( list(self.featurizer.parameters())+list(self.classifier.parameters())+
+                                          list(self.atten.parameters()),
+                                          lr=self.hparams["lr"],
+                                          weight_decay=self.hparams['weight_decay']
+                                         )
+        
+#         self.optimizer = torch.optim.SGD( list(self.featurizer.parameters())+list(self.classifier.parameters())+
+#                                           list(self.atten.parameters())+list(self.g_att.parameters()),
+#                                          lr=0.001, momentum=0.9, weight_decay=1e-6
+#                                         )
+    
+
+
+    ## feature refinement and augmentation...
+    def refine_augment(self, fx,fp_refined):
+
+        #atten = AttenHead(fx.size(1), num_heads=1)
+        # print(atten)
+        fxg, wx = self.atten(fx, fp_refined.unsqueeze(0)) # fxg: Refined feature for further use, wx: attention weights
+        return fxg,wx
+
+
+    def get_augmented_feature(self, fx,fp):
+
+        fxg,wx=self.refine_augment(fx,fp)
+        return fxg
+
+    def get_augmented_batch_looped(self, fx_batch,fp):
+        fx_batch_aug=None
+        for col in range(fx_batch.size(0)):
+            fx_=fx_batch[col]
+            fx_=torch.reshape(fx_, (1, fx_.size(0)))
+            if fx_batch_aug==None:
+                fx_batch_aug=self.get_augmented_feature(fx_,fp)
+            else:
+                fx_batch_aug=torch.cat((fx_batch_aug, self.get_augmented_feature(fx_,fp)), 0)
+        return fx_batch_aug
+
+
+    def get_augmented_batch(self,fx_batch,fp):
+        batch_list=list(fx_batch)
+        batch_list_updated = list(map(lambda im_fx:
+                                      self.get_augmented_feature(torch.reshape(im_fx, (1, im_fx.size(0))),fp), batch_list))
+
+        fx_batch_aug = torch.stack([sub_list for sub_list in batch_list_updated], dim=0)
+        fx_batch_aug = torch.squeeze(fx_batch_aug, 1)
         return fx_batch_aug
     
 
@@ -270,7 +432,8 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
     def predict(self, x):
         return self.classifier(self.featurizer(x))
 
-################################ Code required for RCERM ################################ 
+################################ Code required for RCERM_NG ################################ 
+    
     
 class Fish(Algorithm):
     """
