@@ -273,8 +273,11 @@ if __name__ == "__main__":
         for id_d in range(len(minibatches_device)):
             print('Queue (class ',id_c,', domain ',id_d,') : ',queue_var.train_queues[id_c][id_d].size())
 
-    algorithm.atten.train()
-    algorithm.g_att.train()
+    if args.algorithm=='RCERM':
+        algorithm.atten.train()
+        algorithm.g_att.train()
+    if args.algorithm=='RCERMNG':
+        algorithm.atten.train()
 
     ################################ Code required for RCERM ################################ 
         
