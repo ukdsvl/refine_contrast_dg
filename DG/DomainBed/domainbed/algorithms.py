@@ -121,7 +121,7 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
     """
 
     def __init__(self, input_shape, num_classes, num_domains, hparams):
-        super(ERM, self).__init__(input_shape, num_classes, num_domains,
+        super(RCERM, self).__init__(input_shape, num_classes, num_domains,
                                   hparams)
         self.featurizer = networks.Featurizer(input_shape, self.hparams)
         self.classifier = networks.Classifier(
@@ -146,7 +146,54 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
 #                                           list(self.atten.parameters())+list(self.g_att.parameters()),
 #                                          lr=0.001, momentum=0.9, weight_decay=1e-6
 #                                         )
-        
+    
+    ## gated fusion based representatives refinement ... 
+    def gated_fusion_refinement(self, fx,fp):
+        fx_repeat=fx.repeat(fp.size(0),1)
+        fxfpcat=torch.cat([fx_repeat, fp], dim=1)
+    #     print(fxfpcat,fxfpcat.size())
+
+
+        #g_att = nn.Linear(fxfpcat.size(1), fxfpcat.size(1)//2,bias=False)
+        z=self.g_att(fxfpcat).sigmoid()
+
+    #     print('z_vector:\n',z,z.size())
+
+        fx_repeat_tanh=fx_repeat.tanh()
+        # print(fx_repeat_tanh,fx_repeat_tanh.size())
+
+        fp_tanh=fp.tanh()
+        # print(fp_tanh,fp_tanh.size())
+
+        fp_refined=fp_tanh*(1-z)+fx_repeat_tanh*z # refined means
+
+        return fp_refined
+
+    ## feature refinement and augmentation...
+    def refine_augment(self, fx,fp_refined):
+
+        #atten = AttenHead(fx.size(1), num_heads=1)
+        # print(atten)
+        fxg, wx = self.atten(fx, fp_refined.unsqueeze(0)) # fxg: Refined feature for further use, wx: attention weights
+        return fxg,wx
+
+
+    def get_augmented_feature(self, fx,fp):
+        fp_refined=self.gated_fusion_refinement(fx,fp)
+        fxg,wx=self.refine_augment(fx,fp_refined)
+        return fxg
+
+    def get_augmented_batch(self, fx_batch,fp):
+        fx_batch_aug=None
+        for col in range(fx_batch.size(0)):
+            fx_=fx_batch[col]
+            fx_=torch.reshape(fx_, (1, fx_.size(0)))
+            if fx_batch_aug==None:
+                fx_batch_aug=self.get_augmented_feature(fx_,fp)
+            else:
+                fx_batch_aug=torch.cat((fx_batch_aug, self.get_augmented_feature(fx_,fp)), 0)
+        return fx_batch_aug
+    
 
     def update(self, minibatches, unlabeled=None):
         train_queues = queue_var.train_queues
@@ -176,9 +223,9 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
                     all_x = torch.cat((all_x, q), 0)
                     all_y = torch.cat((all_y, label_tensor), 0)
                 
-                positive_queue,negative_queue=get_pos_neg_queues(id_c,id_d,train_queues)
+                positive_queue,negative_queue=queue_var.get_pos_neg_queues(id_c,id_d,train_queues)
                 #### Gated Fusion + Attention based refinement and augmentations
-                k=queue_var.get_augmented_batch(q,positive_queue)
+                k=self.get_augmented_batch(q,positive_queue)
                 
                 # detach the key as we won't be backpropagating by the key encoder
                 k = k.detach()
@@ -205,7 +252,8 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
         
 
         all_pred=self.classifier(all_x)
-        loss = F.cross_entropy(all_pred, all_y)+loss_rc
+        loss_ce=F.cross_entropy(all_pred, all_y)
+        loss = loss_ce+loss_rc
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -217,7 +265,7 @@ class RCERM(Algorithm): # Refined_Contrastive_ERM
 
         queue_var.train_queues = train_queues # update the global variable
             
-        return {'loss': loss.item()}
+        return {'loss': loss.item(),'loss_ce': loss_ce.item(),'loss_rc': loss_rc.item()}
 
     def predict(self, x):
         return self.classifier(self.featurizer(x))
