@@ -214,6 +214,8 @@ if __name__ == "__main__":
         torch.save(save_dict, os.path.join(args.output_dir, filename))
 
     ################################ Code required for RCERM ################################ 
+    minibatches_device = [(x.to(device), y.to(device))
+                for x,y in next(train_minibatches_iterator)]
     # pre-populate the global list of queues ...
     # Later, minibatches might have some classes with no eg, therefore, this step is necessary
     # (though it looks redundant), as we want to ensure a proper order of storage.
