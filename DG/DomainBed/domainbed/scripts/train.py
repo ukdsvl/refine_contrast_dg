@@ -108,7 +108,7 @@ if __name__ == "__main__":
         raise NotImplementedError
 
     ### DEBUGGING    
-    print(dataset)
+#     print(dataset)
         
     # Split each env into an 'in-split' and an 'out-split'. We'll train on
     # each in-split except the test envs, and evaluate on all splits.
