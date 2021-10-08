@@ -23,10 +23,6 @@ from domainbed.lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
 
 ################################ Code required for RCERM ################################ 
 from domainbed import queue_var
-
-queue_sz = queue_var.queue_sz # the memory module/ queue size
-tau = queue_var.tau # temperature parameter in the objective
-momentum = queue_var.momentum # theta in momentum encoding step
 ################################ Code required for RCERM ################################ 
 
 if __name__ == "__main__":
@@ -111,6 +107,9 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError
 
+    ### DEBUGGING    
+    print(dataset)
+        
     # Split each env into an 'in-split' and an 'out-split'. We'll train on
     # each in-split except the test envs, and evaluate on all splits.
 
@@ -213,67 +212,70 @@ if __name__ == "__main__":
         }
         torch.save(save_dict, os.path.join(args.output_dir, filename))
 
-    ################################ Code required for RCERM ################################ 
-    minibatches_device = [(x.to(device), y.to(device))
-                for x,y in next(train_minibatches_iterator)]
-    # pre-populate the global list of queues ...
-    # Later, minibatches might have some classes with no eg, therefore, this step is necessary
-    # (though it looks redundant), as we want to ensure a proper order of storage.
-    train_queues=[] # create an adhoc variable for speed-up
-    for id_c in range(dataset.num_classes):
-        tmp_queues=[]
-        for id_d in range(len(minibatches_device)):
-            tmp_queues.append(None)
-        train_queues.append(tmp_queues)
-    #queue_var.train_queues=train_queues # assign to the global variable
-
-    # create an array to store flags to indicate whether queues have reached their required sizes
-    flag_arr = np.zeros([dataset.num_classes, len(minibatches_device)], dtype = int)
-
-    #### The creation of the initial list of queues
-    #train_queues=queue_var.train_queues # create an adhoc variable for speed-up 
-    # assigning directly into the global variable caused slow speed.
-    tpcnt=0
-    while not np.sum(flag_arr)==dataset.num_classes*len(minibatches_device): #until all queues have queue_sz elts
+    ################################ Code required for RCERM ################################
+    if args.algorithm=='RCERM' or args.algorithm=='RCERMNG': # Queue computations are to be done only for RCERM/RCERMNG
+        print('Firstly, computing Queues for the algorithm: ',args.algorithm)
+        queue_sz = queue_var.queue_sz # the memory module/ queue size
         minibatches_device = [(x.to(device), y.to(device))
-                for x,y in next(train_minibatches_iterator)]
-        print('\n tpcnt: ',tpcnt,' ... Completed',np.sum(flag_arr),' queues out of ',dataset.num_classes*len(minibatches_device))
-        for id_c in range(dataset.num_classes): # loop over classes
-            for id_d in range(len(minibatches_device)): # loop over domains
-                if flag_arr[id_c][id_d]==1:
-                    print('Queue (class ',id_c,', domain ',id_d,') is completely filled. ')
-                    continue
-                else:
-                    mb_ids=(minibatches_device[id_d][1] == id_c).nonzero(as_tuple=True)[0]
-                    # indices of those egs from domain id_d, whose class label is id_c
-                    label_tensor=minibatches_device[id_d][1][mb_ids] # labels
-                    if mb_ids.size(0)==0:
-                        print('class has no element')
-                        continue
-                    data_tensor=minibatches_device[id_d][0][mb_ids] # data
-                    data_emb = algorithm.key_encoder(data_tensor) # extract features: torch.Size([negs, dim])
-                    data_emb = data_emb.detach()
-                    data_emb = torch.div(data_emb,torch.norm(data_emb,dim=1).reshape(-1,1))#l2 normalize
+                    for x,y in next(train_minibatches_iterator)]
+        # pre-populate the global list of queues ...
+        # Later, minibatches might have some classes with no eg, therefore, this step is necessary
+        # (though it looks redundant), as we want to ensure a proper order of storage.
+        train_queues=[] # create an adhoc variable for speed-up
+        for id_c in range(dataset.num_classes):
+            tmp_queues=[]
+            for id_d in range(len(minibatches_device)):
+                tmp_queues.append(None)
+            train_queues.append(tmp_queues)
+        #queue_var.train_queues=train_queues # assign to the global variable
 
-                    current_queue=train_queues[id_c][id_d]
-                    if current_queue is None:
-                        current_queue = data_emb
-                    elif current_queue.size(0) < queue_sz:
-                        current_queue = torch.cat((current_queue, data_emb), 0)    
-                    if current_queue.size(0) > queue_sz:
-                        # keep only the last queue_sz entries
-                        current_queue = current_queue[-queue_sz:] # keep only the last queue_sz entries
-                    if current_queue.size(0) == queue_sz:
-                        flag_arr[id_c][id_d]=1
-                    train_queues[id_c][id_d] = current_queue
-                    print('Queue (class ',id_c,', domain ',id_d,') : ',train_queues[id_c][id_d].size())
-        tpcnt+=1
-    queue_var.train_queues=train_queues # assign to the global variable
-    
-    # sanity checking the queues obtained
-    for id_c in range(dataset.num_classes):
-        for id_d in range(len(minibatches_device)):
-            print('Queue (class ',id_c,', domain ',id_d,') : ',queue_var.train_queues[id_c][id_d].size())
+        # create an array to store flags to indicate whether queues have reached their required sizes
+        flag_arr = np.zeros([dataset.num_classes, len(minibatches_device)], dtype = int)
+
+        #### The creation of the initial list of queues
+        #train_queues=queue_var.train_queues # create an adhoc variable for speed-up 
+        # assigning directly into the global variable caused slow speed.
+        tpcnt=0
+        while not np.sum(flag_arr)==dataset.num_classes*len(minibatches_device): #until all queues have queue_sz elts
+            minibatches_device = [(x.to(device), y.to(device))
+                    for x,y in next(train_minibatches_iterator)]
+            print('\n tpcnt: ',tpcnt,' ... Completed',np.sum(flag_arr),' queues out of ',dataset.num_classes*len(minibatches_device))
+            for id_c in range(dataset.num_classes): # loop over classes
+                for id_d in range(len(minibatches_device)): # loop over domains
+                    if flag_arr[id_c][id_d]==1:
+                        print('Queue (class ',id_c,', domain ',id_d,') is completely filled. ')
+                        continue
+                    else:
+                        mb_ids=(minibatches_device[id_d][1] == id_c).nonzero(as_tuple=True)[0]
+                        # indices of those egs from domain id_d, whose class label is id_c
+                        label_tensor=minibatches_device[id_d][1][mb_ids] # labels
+                        if mb_ids.size(0)==0:
+                            print('class has no element')
+                            continue
+                        data_tensor=minibatches_device[id_d][0][mb_ids] # data
+                        data_emb = algorithm.key_encoder(data_tensor) # extract features: torch.Size([negs, dim])
+                        data_emb = data_emb.detach()
+                        data_emb = torch.div(data_emb,torch.norm(data_emb,dim=1).reshape(-1,1))#l2 normalize
+
+                        current_queue=train_queues[id_c][id_d]
+                        if current_queue is None:
+                            current_queue = data_emb
+                        elif current_queue.size(0) < queue_sz:
+                            current_queue = torch.cat((current_queue, data_emb), 0)    
+                        if current_queue.size(0) > queue_sz:
+                            # keep only the last queue_sz entries
+                            current_queue = current_queue[-queue_sz:] # keep only the last queue_sz entries
+                        if current_queue.size(0) == queue_sz:
+                            flag_arr[id_c][id_d]=1
+                        train_queues[id_c][id_d] = current_queue
+                        print('Queue (class ',id_c,', domain ',id_d,') : ',train_queues[id_c][id_d].size())
+            tpcnt+=1
+        queue_var.train_queues=train_queues # assign to the global variable
+
+        # sanity checking the queues obtained
+        for id_c in range(dataset.num_classes):
+            for id_d in range(len(minibatches_device)):
+                print('Queue (class ',id_c,', domain ',id_d,') : ',queue_var.train_queues[id_c][id_d].size())
 
     if args.algorithm=='RCERM':
         algorithm.atten.train()
