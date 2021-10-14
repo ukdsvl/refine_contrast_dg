@@ -44,6 +44,18 @@ def get_pos_neg_queues(id_c,id_d,train_queues):
     #print('Negative Queue Generated for class ',id_c,' domain ',id_d,' with size ',negative_queue.size())
     return positive_queue,negative_queue
 
+def get_pos_queues(id_c,id_d,train_queues):
+    ind_class_other_domains=not_ind_i(train_queues[id_c],id_d) # indexed class, other domains; len = N_d-1
+    positive_queue=None
+    for positive_domain_queue in ind_class_other_domains:
+        if positive_queue is None:
+            positive_queue=positive_domain_queue
+        else:
+            positive_queue = torch.cat((positive_queue, positive_domain_queue), 0)
+    #print('Positive Queue Generated for class ',id_c,' domain ',id_d,' with size ',positive_queue.size())
+
+    return positive_queue
+
 def loss_function(q, k, queue):
 
     N = q.shape[0]
@@ -51,9 +63,9 @@ def loss_function(q, k, queue):
 
     pos = torch.exp(torch.div(torch.bmm(q.view(N,1,C), k.view(N,C,1)).view(N, 1),tau))
     neg = torch.sum(torch.exp(torch.div(torch.mm(q.view(N,C), torch.t(queue)),tau)), dim=1)
-    denominator = neg + pos # if we omit +pos, loss would reduce to -ve values.
+    denominator = neg + pos
 
-    return torch.mean(-torch.log(torch.div(pos,denominator))) # this loss is essentially a reformulation of infoNCE loss
+    return torch.mean(-torch.log(torch.div(pos,denominator)))
 
 class AttenHead(nn.Module):
     def __init__(self, fdim, num_heads=1):
