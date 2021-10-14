@@ -213,7 +213,7 @@ if __name__ == "__main__":
         torch.save(save_dict, os.path.join(args.output_dir, filename))
 
     ################################ Code required for RCERM ################################
-    if args.algorithm=='RCERM' or args.algorithm=='RCERMNG': # Queue computations are to be done only for RCERM/RCERMNG
+    if args.algorithm=='RCERM' or args.algorithm=='RCERMNG' or args.algorithm=='ERMR' or args.algorithm=='CLNR': # Queue computations are to be done only for RCERM/RCERMNG/ERMR/CLNR
         print('Firstly, computing Queues for the algorithm: ',args.algorithm)
         queue_sz = queue_var.queue_sz # the memory module/ queue size
         minibatches_device = [(x.to(device), y.to(device))
@@ -277,7 +277,7 @@ if __name__ == "__main__":
             for id_d in range(len(minibatches_device)):
                 print('Queue (class ',id_c,', domain ',id_d,') : ',queue_var.train_queues[id_c][id_d].size())
 
-    if args.algorithm=='RCERM':
+    if args.algorithm=='RCERM' or args.algorithm=='ERMR':
         algorithm.atten.train()
         algorithm.g_att.train()
     if args.algorithm=='RCERMNG':
