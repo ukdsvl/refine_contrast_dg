@@ -14,6 +14,9 @@ torch.cuda.manual_seed_all(seed)
 torch.manual_seed(seed)
 np.random.seed(seed)
 
+import time
+from models import queue_var
+
 datasets.CIFAR10(root='../../data/', download=True, train=True)
 
 classes = ['airplane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
@@ -108,7 +111,7 @@ def domain_specific_training(dom,clas):
     train_x = torch.cat(train_x)
     train_y = torch.cat(train_y)
 
-    train_x = train_x.view(5, length_of_domain-800, 3, 32, 32)
+    train_x = train_x.view(5, length_of_domain-800, 3, 32, 32) # just rearranging train domain data, for indexing
     train_y = train_y.view(5, length_of_domain-800).long()
 
     length_of_domain -= 800
@@ -119,7 +122,7 @@ def domain_specific_training(dom,clas):
     batch_size=50
     print('------------------------')
 
-    model = AGG()
+    model = SRCAGG()
     for epoch in range(100):
         print('epoch:',epoch)
         x_train = []
@@ -127,7 +130,7 @@ def domain_specific_training(dom,clas):
 
         random = np.random.permutation(length_of_domain)
 
-        for i in range(5):
+        for i in range(5): #every chosen train domain
             x = train_x[i]
             x_permuted = x[random]
 
@@ -142,20 +145,124 @@ def domain_specific_training(dom,clas):
 
         y_train  = torch.cat(y_train).to(device)
         y_train = y_train.view(5,length_of_domain)
+        
+        ################################ Code required for SRCAGG ################################ 
+        #print(x_train.size(),y_train.size()) #torch.Size([5, 3200, 3, 32, 32]) torch.Size([5, 3200])
 
-        for i in range(5):
-            avg_cost = 0
-            for k in range(0,length_of_domain,batch_size):
+        ## class ids might be disconnected due to the ZS setting, so, rename them as 0,1,...C-1
+        unique_cids=list(y_train.unique())
+        for ii in range(y_train.size(0)):
+            for jj in range(y_train.size(1)):
+                y_train[ii,jj]=unique_cids.index(y_train[ii,jj])
 
+        ### Native ZSDG style
+        #     for i in range(5): # for every domain, accumulate/aggregate
+        #         avg_cost = 0
+        #         for k in range(0,length_of_domain,batch_size): #sample mini-batches
+
+        #             left_x = x_train[i][k:k+batch_size,:,:,:]
+        #             labels = y_train[i][k:k+batch_size]
+
+        #             avg_cost+= model.train(left_x,labels,i)
+
+        #         avg_cost = avg_cost/(length_of_domain/batch_size)
+
+        #     print(avg_cost)
+
+        ### Domainbed style
+        all_minibatches=[] # len(all_minibatches)=64 (3200/50), bsz=50
+        for k in range(0,length_of_domain,batch_size): #sample mini-batches
+            minibatches_device=[] #analogy to domainbed
+            for i in range(5): # for every domain, accumulate/aggregate
+                tmp_list=[]
                 left_x = x_train[i][k:k+batch_size,:,:,:]
                 labels = y_train[i][k:k+batch_size]
+                tmp_list.append(left_x)
+                tmp_list.append(labels)
+                minibatches_device.append(tmp_list)
+            all_minibatches.append(minibatches_device)
 
-                avg_cost+= model.train(left_x,labels,i)
+        print('Firstly, computing Queues for the algorithm ')
+        queue_sz = queue_var.queue_sz # the memory module/ queue size
+        minibatches_device=all_minibatches[0]
+        num_classes=len(y_train.unique())
+        num_domains=len(minibatches_device)
+        # pre-populate the global list of queues ...
+        # Later, minibatches might have some classes with no eg, therefore, this step is necessary
+        # (though it looks redundant), as we want to ensure a proper order of storage.
+        train_queues=[] # create an adhoc variable for speed-up
+        for id_c in range(num_classes):
+            tmp_queues=[]
+            for id_d in range(num_domains):
+                tmp_queues.append(None)
+            train_queues.append(tmp_queues)
+        #queue_var.train_queues=train_queues # assign to the global variable
 
-            avg_cost = avg_cost/(length_of_domain/batch_size)
+        # create an array to store flags to indicate whether queues have reached their required sizes
+        flag_arr = np.zeros([num_classes, num_domains], dtype = int)
 
+        #### The creation of the initial list of queues
+        #train_queues=queue_var.train_queues # create an adhoc variable for speed-up 
+        # assigning directly into the global variable caused slow speed.
+        tpcnt=0
+        while not np.sum(flag_arr)==num_classes*num_domains: #until all queues have queue_sz elts
+            minibatches_device=all_minibatches[tpcnt]
+            print('\n tpcnt: ',tpcnt,' ... Completed',np.sum(flag_arr),' queues out of ',num_classes*num_domains)
+            for id_c in range(num_classes): # loop over classes
+                for id_d in range(num_domains): # loop over domains
+                    if flag_arr[id_c][id_d]==1:
+                        print('Queue (class ',id_c,', domain ',id_d,') is completely filled. ')
+                        continue
+                    else:
+                        mb_ids=(minibatches_device[id_d][1] == id_c).nonzero(as_tuple=True)[0]
+                        # indices of those egs from domain id_d, whose class label is id_c
+                        label_tensor=minibatches_device[id_d][1][mb_ids] # labels
+                        if mb_ids.size(0)==0:
+                            print('class has no element')
+                            continue
+                        data_tensor=minibatches_device[id_d][0][mb_ids] # data
+                        data_emb = model.key_encoder(data_tensor) # extract features: torch.Size([negs, dim])
+                        data_emb = data_emb.detach()
+                        data_emb = torch.div(data_emb,torch.norm(data_emb,dim=1).reshape(-1,1))#l2 normalize
+
+                        current_queue=train_queues[id_c][id_d]
+                        if current_queue is None:
+                            current_queue = data_emb
+                        elif current_queue.size(0) < queue_sz:
+                            current_queue = torch.cat((current_queue, data_emb), 0)    
+                        if current_queue.size(0) > queue_sz:
+                            # keep only the last queue_sz entries
+                            current_queue = current_queue[-queue_sz:] # keep only the last queue_sz entries
+                        if current_queue.size(0) == queue_sz:
+                            flag_arr[id_c][id_d]=1
+                        train_queues[id_c][id_d] = current_queue
+                        print('Queue (class ',id_c,', domain ',id_d,') : ',train_queues[id_c][id_d].size())
+            tpcnt+=1
+            if tpcnt==len(all_minibatches):
+                tpcnt=0
+        queue_var.train_queues=train_queues # assign to the global variable
+
+        # sanity checking the queues obtained
+        for id_c in range(num_classes):
+            for id_d in range(num_domains):
+                print('Queue (class ',id_c,', domain ',id_d,') : ',queue_var.train_queues[id_c][id_d].size())
+
+        model.atten.train()
+        model.g_att.train()
+        
+        
+        mb_costs=[]
+        for idx, minibatches in enumerate(all_minibatches):
+            #if idx==2:
+            #    break
+            mb_cost=model.update(minibatches)
+            mb_costs.append(mb_cost)
+        avg_cost=sum(mb_costs)/len(mb_costs)    
+        #print('Epoch ',epoch,' avg_cost: ',avg_cost)
         print(avg_cost)
-
+        
+        ################################ Code required for SRCAGG ################################ 
+        
         if (epoch+1)%25==0:
             # print('After {} epochs'.format(epoch))
 
