@@ -2230,5 +2230,3 @@ Zero Shot [0.7232, 0.7353]
 Test MSE : [0.414225, 0.455175] 
  Mean: 0.4347 
  Std Dev 0.028956022689589113
-/rapid_data/dsfashionshare/miniconda/envs/simsiam/lib/python3.8/site-packages/torch/nn/functional.py:3060: UserWarning: Default upsampling behavior when mode=bilinear is changed to align_corners=False since 0.4.0. Please specify align_corners=True if the old behavior is desired. See the documentation of nn.Upsample for details.
-  warnings.warn("Default upsampling behavior when mode={} is changed "
