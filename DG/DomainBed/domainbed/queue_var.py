@@ -26,10 +26,10 @@ def get_pos_neg_queues(id_c,id_d,train_queues):
     ind_class_other_domains=not_ind_i(train_queues[id_c],id_d) # indexed class, other domains; len = N_d-1
     positive_queue=None
     for positive_domain_queue in ind_class_other_domains:
-        if positive_queue is None:
-            positive_queue=positive_domain_queue
-        else:
+        if positive_queue is not None:
             positive_queue = torch.cat((positive_queue, positive_domain_queue), 0)
+        else:
+            positive_queue=positive_domain_queue
     #print('Positive Queue Generated for class ',id_c,' domain ',id_d,' with size ',positive_queue.size())
 
     other_classes=not_ind_i(train_queues,id_c) # remaining classes; len = N_c-1
@@ -37,10 +37,10 @@ def get_pos_neg_queues(id_c,id_d,train_queues):
 
     for negative_class in other_classes:
         for negative_domain_queue in negative_class:
-            if negative_queue is None:
-                negative_queue=negative_domain_queue
-            else:
+            if negative_queue is not None:
                 negative_queue = torch.cat((negative_queue, negative_domain_queue), 0)
+            else:
+                negative_queue=negative_domain_queue
     #print('Negative Queue Generated for class ',id_c,' domain ',id_d,' with size ',negative_queue.size())
     return positive_queue,negative_queue
 
@@ -48,10 +48,10 @@ def get_pos_queues(id_c,id_d,train_queues):
     ind_class_other_domains=not_ind_i(train_queues[id_c],id_d) # indexed class, other domains; len = N_d-1
     positive_queue=None
     for positive_domain_queue in ind_class_other_domains:
-        if positive_queue is None:
-            positive_queue=positive_domain_queue
-        else:
+        if positive_queue is not None:
             positive_queue = torch.cat((positive_queue, positive_domain_queue), 0)
+        else:
+            positive_queue=positive_domain_queue
     #print('Positive Queue Generated for class ',id_c,' domain ',id_d,' with size ',positive_queue.size())
 
     return positive_queue
@@ -63,9 +63,9 @@ def loss_function(q, k, queue):
 
     pos = torch.exp(torch.div(torch.bmm(q.view(N,1,C), k.view(N,C,1)).view(N, 1),tau))
     neg = torch.sum(torch.exp(torch.div(torch.mm(q.view(N,C), torch.t(queue)),tau)), dim=1)
-    denominator = neg + pos
+    denominator = neg + pos # if we omit +pos, loss would reduce to -ve values.
 
-    return torch.mean(-torch.log(torch.div(pos,denominator)))
+    return torch.mean(-torch.log(torch.div(pos,denominator))) # this loss is essentially a reformulation of infoNCE loss
 
 class AttenHead(nn.Module):
     def __init__(self, fdim, num_heads=1):
